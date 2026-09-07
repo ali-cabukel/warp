@@ -6,13 +6,15 @@ Generated projects include:
 
 - Training + prediction KFP pipelines (BQML classification)
 - `payload.json` for project/region/tables/thresholds
-- Makefile compile / trigger targets via `google-cloud-aiplatform`
+- Makefile compile / trigger targets via Poetry + `google-cloud-aiplatform`
+- **Poetry** for dependency management in generated projects
 - **Terraform**: GCS, Artifact Registry, Pub/Sub, Cloud Run, Cloud Scheduler, IAM, Cloud Build triggers
 - **Cloud Build**: PR checks, push → `terraform apply`, release → docker + KFP artifacts to GCS
 
 ## Prerequisites
 
 - Python ≥ 3.11 (or the version you select when copying)
+- [Poetry](https://python-poetry.org/) ≥ 1.8 (for generated projects)
 - [Copier](https://copier.readthedocs.io/) ≥ 9
 - Terraform ≥ 1.5
 - A GCP project with Vertex AI, BigQuery, GCS, Pub/Sub, Cloud Run, Scheduler, and Cloud Build APIs

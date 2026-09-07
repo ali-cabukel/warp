@@ -22,7 +22,7 @@ _message_after_copy: |
 
   Next steps:
       1. cd {{ project_slug }}
-      2. make setup
+      2. Install Poetry if needed, then: make setup
       3. Edit payload.json and terraform/terraform.tfvars
       4. make compile
       5. make tf-init && make tf-apply

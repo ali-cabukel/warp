@@ -3,20 +3,25 @@ FROM python:{{ python_version }}-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8080
+    PORT=8080 \
+    POETRY_VERSION=2.1.4 \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_NO_INTERACTION=1
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
-    && rm -rf /var/lib/apt/lists/*
+      curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "poetry==${POETRY_VERSION}"
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml poetry.lock* README.md ./
 COPY src ./src
 COPY payload.json ./payload.json
 
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir .
+RUN poetry install --only main --no-ansi --no-root \
+ && poetry install --only-root --no-ansi
 
 EXPOSE 8080
 
