@@ -1,8 +1,9 @@
-# PR checks: pre-commit, unit tests, KFP compile.
+# PR checks: pre-commit, unit tests, KFP compile (Poetry).
 # Triggered by terraform google_cloudbuild_trigger.pr
 
 substitutions:
   _PYTHON_VERSION: "{{ python_version }}"
+  _POETRY_VERSION: "2.1.4"
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -16,19 +17,19 @@ steps:
       - |
         set -euo pipefail
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-        pip install pre-commit
+        pip install "poetry==${_POETRY_VERSION}"
+        poetry install --no-ansi
 
         echo "==> pre-commit"
-        pre-commit run --all-files --show-diff-on-failure
+        poetry run pre-commit run --all-files --show-diff-on-failure
 
         echo "==> unit tests"
-        pytest -q
+        poetry run pytest -q
 
         echo "==> KFP compile"
         mkdir -p artifacts
-        python -m {{ package_name }}.pipelines.training artifacts/training_pipeline.yaml
-        python -m {{ package_name }}.pipelines.prediction artifacts/prediction_pipeline.yaml
+        poetry run python -m {{ package_name }}.pipelines.training artifacts/training_pipeline.yaml
+        poetry run python -m {{ package_name }}.pipelines.prediction artifacts/prediction_pipeline.yaml
         test -s artifacts/training_pipeline.yaml
         test -s artifacts/prediction_pipeline.yaml
         echo "Compiled KFP artifacts OK"

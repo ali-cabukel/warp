@@ -29,6 +29,7 @@ Cloud Scheduler (cron in terraform.tfvars)
 ## Setup
 
 ```bash
+# requires Poetry: https://python-poetry.org/docs/#installation
 make setup
 # edit payload.json — project_id, tables, features, thresholds, service_account
 # edit terraform/terraform.tfvars — crons, github_owner/repo, bucket
@@ -36,6 +37,7 @@ make setup
 
 Prerequisites:
 
+- [Poetry](https://python-poetry.org/) ≥ 1.8
 - GCP project with Vertex AI, BigQuery, GCS, Pub/Sub, Cloud Run, Scheduler, Cloud Build APIs
 - ADC or a service account with rights to apply Terraform and submit pipelines
 - GitHub repo connected to Cloud Build (for triggers)
@@ -46,6 +48,14 @@ Prerequisites:
 make compile
 make trigger-training
 make trigger-prediction
+```
+
+CLI equivalent:
+
+```bash
+poetry run python -m {{ package_name }}.trigger.submit training \
+  --template artifacts/training_pipeline.yaml \
+  --payload payload.json
 ```
 
 ## Infrastructure
@@ -69,7 +79,7 @@ After the first release image exists, set `trigger_image` in tfvars (or let Clou
 
 | Trigger | When | Config |
 |---------|------|--------|
-| PR | PR → `main` | [`cloudbuild/pr.yaml`](cloudbuild/pr.yaml) — pre-commit, unit tests, KFP compile |
+| PR | PR → `main` | [`cloudbuild/pr.yaml`](cloudbuild/pr.yaml) — Poetry install, pre-commit, unit tests, KFP compile |
 | Push | push → `main` | [`cloudbuild/push.yaml`](cloudbuild/push.yaml) — `terraform apply` |
 | Release | tag `vX.Y.Z` | [`cloudbuild/release.yaml`](cloudbuild/release.yaml) — docker build/push, copy KFP artifacts to GCS, deploy Cloud Run, optional e2e |
 
@@ -100,5 +110,6 @@ terraform/      # Pub/Sub, Cloud Run, Scheduler, Cloud Build triggers
 cloudbuild/     # pr / push / release configs
 payload.json
 Dockerfile
+pyproject.toml   # Poetry
 Makefile
 ```

@@ -12,6 +12,7 @@ substitutions:
   _CLOUD_RUN_SERVICE: "{{ project_slug }}-trigger"
   _RUN_E2E: "false"
   _PYTHON_VERSION: "{{ python_version }}"
+  _POETRY_VERSION: "2.1.4"
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -26,10 +27,11 @@ steps:
       - |
         set -euo pipefail
         python -m pip install --upgrade pip
-        pip install -e .
+        pip install "poetry==${_POETRY_VERSION}"
+        poetry install --only main --no-ansi
         mkdir -p artifacts
-        python -m {{ package_name }}.pipelines.training artifacts/training_pipeline.yaml
-        python -m {{ package_name }}.pipelines.prediction artifacts/prediction_pipeline.yaml
+        poetry run python -m {{ package_name }}.pipelines.training artifacts/training_pipeline.yaml
+        poetry run python -m {{ package_name }}.pipelines.prediction artifacts/prediction_pipeline.yaml
 
   - name: "gcr.io/cloud-builders/gcloud"
     id: "publish-artifacts"
@@ -86,9 +88,9 @@ steps:
           exit 0
         fi
         python -m pip install --upgrade pip
-        pip install -e .
-        # Smoke: submit training only if ADC / Cloud Build SA can call Vertex.
-        python -m {{ package_name }}.trigger.submit training \
+        pip install "poetry==${_POETRY_VERSION}"
+        poetry install --only main --no-ansi
+        poetry run python -m {{ package_name }}.trigger.submit training \
           --template artifacts/training_pipeline.yaml \
           --payload payload.json
         echo "E2E training submit OK"

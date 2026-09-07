@@ -1,5 +1,5 @@
 # =============================================================================
-# {{ project_name }} — developer Makefile
+# {{ project_name }} — developer Makefile (Poetry)
 # =============================================================================
 # Usage:  make <target>   (or just `make` for the help listing)
 # =============================================================================
@@ -14,12 +14,7 @@ m=re.match(r'(\d+)\.(\d+)','$(MIN_PY)');                                        
 exit(0 if sys.version_info[:2] >= (int(m.group(1)),int(m.group(2))) else 1)"    \
       >/dev/null 2>&1 && { echo $$p; exit; };                                   \
   done)
-VENV        ?= .venv
-BIN         := $(VENV)/bin
-PIP         := $(BIN)/pip
-PYTEST      := $(BIN)/pytest
-RUFF        := $(BIN)/ruff
-PRECOMMIT   := $(BIN)/pre-commit
+POETRY      ?= poetry
 PACKAGE     := {{ package_name }}
 PAYLOAD     ?= payload.json
 ARTIFACTS   := artifacts
@@ -45,38 +40,47 @@ check-python:  ## Verify a suitable Python interpreter is available.
 	fi
 	@echo "Using $(PYTHON) ($$($(PYTHON) --version 2>&1))"
 
-.PHONY: venv
-venv: check-python  ## Create a local virtualenv at $(VENV).
-	@test -d $(VENV) || $(PYTHON) -m venv $(VENV)
-	@$(PIP) install --upgrade pip wheel
+.PHONY: check-poetry
+check-poetry: check-python  ## Verify Poetry is installed.
+	@command -v $(POETRY) >/dev/null 2>&1 || {                                    \
+	  echo "ERROR: Poetry not found. Install: https://python-poetry.org/docs/#installation"; \
+	  echo "       e.g.  curl -sSL https://install.python-poetry.org | $(PYTHON) -"; \
+	  exit 1;                                                                     \
+	}
+	@$(POETRY) --version
 
 .PHONY: install
-install: venv  ## Install the project + dev dependencies.
-	$(PIP) install -e ".[dev]"
+install: check-poetry  ## Install the project + dev dependencies with Poetry.
+	$(POETRY) env use $(PYTHON)
+	$(POETRY) install
 
 .PHONY: setup
-setup: install  ## One-shot setup: install deps and pre-commit hooks.
-	$(PRECOMMIT) install
+setup: install  ## One-shot setup: Poetry install + pre-commit hooks.
+	$(POETRY) run pre-commit install
 	@test -f .env || cp .env.template .env
 	@mkdir -p $(ARTIFACTS)
 	@echo ""
-	@echo "Setup complete. Activate with:  source $(BIN)/activate"
+	@echo "Setup complete. Use:  poetry shell   (or prefix commands with poetry run)"
 	@echo "Edit $(PAYLOAD), then: make compile && make trigger-training"
+
+.PHONY: lock
+lock: check-poetry  ## Refresh poetry.lock
+	$(POETRY) lock
 
 # ---- Quality ---------------------------------------------------------------
 
 .PHONY: lint
 lint:  ## Run ruff lint checks.
-	$(RUFF) check .
+	$(POETRY) run ruff check .
 
 .PHONY: format
 format:  ## Auto-format with ruff and fix lints.
-	$(RUFF) check --fix .
-	$(RUFF) format .
+	$(POETRY) run ruff check --fix .
+	$(POETRY) run ruff format .
 
 .PHONY: test
 test:  ## Run the test suite.
-	$(PYTEST)
+	$(POETRY) run pytest
 
 .PHONY: check
 check: lint test  ## Run lint + tests.
@@ -86,24 +90,24 @@ check: lint test  ## Run lint + tests.
 .PHONY: compile-training
 compile-training:  ## Compile the training pipeline to YAML.
 	@mkdir -p $(ARTIFACTS)
-	$(BIN)/python -m $(PACKAGE).pipelines.training $(TRAIN_YAML)
+	$(POETRY) run python -m $(PACKAGE).pipelines.training $(TRAIN_YAML)
 
 .PHONY: compile-prediction
 compile-prediction:  ## Compile the prediction pipeline to YAML.
 	@mkdir -p $(ARTIFACTS)
-	$(BIN)/python -m $(PACKAGE).pipelines.prediction $(PRED_YAML)
+	$(POETRY) run python -m $(PACKAGE).pipelines.prediction $(PRED_YAML)
 
 .PHONY: compile
 compile: compile-training compile-prediction  ## Compile training and prediction pipelines.
 
 .PHONY: trigger-training
 trigger-training:  ## Submit the compiled training pipeline to Vertex AI.
-	$(BIN)/python -m $(PACKAGE).trigger.submit training \
+	$(POETRY) run python -m $(PACKAGE).trigger.submit training \
 	  --template $(TRAIN_YAML) --payload $(PAYLOAD)
 
 .PHONY: trigger-prediction
 trigger-prediction:  ## Submit the compiled prediction pipeline to Vertex AI.
-	$(BIN)/python -m $(PACKAGE).trigger.submit prediction \
+	$(POETRY) run python -m $(PACKAGE).trigger.submit prediction \
 	  --template $(PRED_YAML) --payload $(PAYLOAD)
 
 .PHONY: run-training
@@ -153,5 +157,5 @@ clean:  ## Remove caches and build artifacts.
 	rm -rf build dist htmlcov .coverage $(ARTIFACTS)
 
 .PHONY: distclean
-distclean: clean  ## Also remove the virtualenv.
-	rm -rf $(VENV)
+distclean: clean  ## Also remove the Poetry virtualenv.
+	-$(POETRY) env remove --all
