@@ -1,0 +1,157 @@
+# =============================================================================
+# {{ project_name }} — developer Makefile
+# =============================================================================
+# Usage:  make <target>   (or just `make` for the help listing)
+# =============================================================================
+
+SHELL       := /bin/bash
+MIN_PY      := {{ python_version }}
+PYTHON      ?= $(shell                                                          \
+  for p in python$(MIN_PY) python3.13 python3.12 python3.11 python3.10 python3; do \
+    command -v $$p >/dev/null 2>&1 || continue;                                 \
+    $$p -c "import sys,re;                                                       \
+m=re.match(r'(\d+)\.(\d+)','$(MIN_PY)');                                        \
+exit(0 if sys.version_info[:2] >= (int(m.group(1)),int(m.group(2))) else 1)"    \
+      >/dev/null 2>&1 && { echo $$p; exit; };                                   \
+  done)
+VENV        ?= .venv
+BIN         := $(VENV)/bin
+PIP         := $(BIN)/pip
+PYTEST      := $(BIN)/pytest
+RUFF        := $(BIN)/ruff
+PRECOMMIT   := $(BIN)/pre-commit
+PACKAGE     := {{ package_name }}
+PAYLOAD     ?= payload.json
+ARTIFACTS   := artifacts
+TRAIN_YAML  := $(ARTIFACTS)/training_pipeline.yaml
+PRED_YAML   := $(ARTIFACTS)/prediction_pipeline.yaml
+
+.DEFAULT_GOAL := help
+
+# ---- Help ------------------------------------------------------------------
+
+.PHONY: help
+help:  ## Show this help.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage: make \033[36m<target>\033[0m\n\nTargets:\n"} \
+	      /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+# ---- Setup -----------------------------------------------------------------
+
+.PHONY: check-python
+check-python:  ## Verify a suitable Python interpreter is available.
+	@if [ -z "$(PYTHON)" ]; then                                                  \
+	  echo "ERROR: No Python >= $(MIN_PY) found on PATH.";                        \
+	  exit 1;                                                                     \
+	fi
+	@echo "Using $(PYTHON) ($$($(PYTHON) --version 2>&1))"
+
+.PHONY: venv
+venv: check-python  ## Create a local virtualenv at $(VENV).
+	@test -d $(VENV) || $(PYTHON) -m venv $(VENV)
+	@$(PIP) install --upgrade pip wheel
+
+.PHONY: install
+install: venv  ## Install the project + dev dependencies.
+	$(PIP) install -e ".[dev]"
+
+.PHONY: setup
+setup: install  ## One-shot setup: install deps and pre-commit hooks.
+	$(PRECOMMIT) install
+	@test -f .env || cp .env.template .env
+	@mkdir -p $(ARTIFACTS)
+	@echo ""
+	@echo "Setup complete. Activate with:  source $(BIN)/activate"
+	@echo "Edit $(PAYLOAD), then: make compile && make trigger-training"
+
+# ---- Quality ---------------------------------------------------------------
+
+.PHONY: lint
+lint:  ## Run ruff lint checks.
+	$(RUFF) check .
+
+.PHONY: format
+format:  ## Auto-format with ruff and fix lints.
+	$(RUFF) check --fix .
+	$(RUFF) format .
+
+.PHONY: test
+test:  ## Run the test suite.
+	$(PYTEST)
+
+.PHONY: check
+check: lint test  ## Run lint + tests.
+
+# ---- Pipelines -------------------------------------------------------------
+
+.PHONY: compile-training
+compile-training:  ## Compile the training pipeline to YAML.
+	@mkdir -p $(ARTIFACTS)
+	$(BIN)/python -m $(PACKAGE).pipelines.training $(TRAIN_YAML)
+
+.PHONY: compile-prediction
+compile-prediction:  ## Compile the prediction pipeline to YAML.
+	@mkdir -p $(ARTIFACTS)
+	$(BIN)/python -m $(PACKAGE).pipelines.prediction $(PRED_YAML)
+
+.PHONY: compile
+compile: compile-training compile-prediction  ## Compile training and prediction pipelines.
+
+.PHONY: trigger-training
+trigger-training:  ## Submit the compiled training pipeline to Vertex AI.
+	$(BIN)/python -m $(PACKAGE).trigger.submit training \
+	  --template $(TRAIN_YAML) --payload $(PAYLOAD)
+
+.PHONY: trigger-prediction
+trigger-prediction:  ## Submit the compiled prediction pipeline to Vertex AI.
+	$(BIN)/python -m $(PACKAGE).trigger.submit prediction \
+	  --template $(PRED_YAML) --payload $(PAYLOAD)
+
+.PHONY: run-training
+run-training: compile-training trigger-training  ## Compile and trigger training.
+
+.PHONY: run-prediction
+run-prediction: compile-prediction trigger-prediction  ## Compile and trigger prediction.
+
+# ---- Infrastructure (Terraform) --------------------------------------------
+
+.PHONY: tf-init
+tf-init:  ## terraform init
+	cd terraform && terraform init
+
+.PHONY: tf-plan
+tf-plan:  ## terraform plan (uses terraform.tfvars)
+	cd terraform && terraform plan
+
+.PHONY: tf-apply
+tf-apply:  ## terraform apply (Pub/Sub, Cloud Run, Scheduler, Cloud Build triggers)
+	cd terraform && terraform apply
+
+.PHONY: tf-destroy
+tf-destroy:  ## terraform destroy
+	cd terraform && terraform destroy
+
+# ---- Container / release helpers -------------------------------------------
+
+.PHONY: docker-build
+docker-build:  ## Build the Cloud Run trigger image locally.
+	docker build -t {{ project_slug }}-pipeline-trigger:local .
+
+.PHONY: publish-artifacts
+publish-artifacts: compile  ## Upload payload + compiled KFP YAML to GCS (needs gsutil).
+	@test -n "$(BUCKET)" || (echo "Set BUCKET=<pipeline_root_bucket>"; exit 1)
+	gsutil cp $(PAYLOAD) gs://$(BUCKET)/config/payload.json
+	gsutil cp $(TRAIN_YAML) gs://$(BUCKET)/kfp/training_pipeline.yaml
+	gsutil cp $(PRED_YAML) gs://$(BUCKET)/kfp/prediction_pipeline.yaml
+
+# ---- Housekeeping ----------------------------------------------------------
+
+.PHONY: clean
+clean:  ## Remove caches and build artifacts.
+	find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache \
+	                  -o -name .mypy_cache -o -name "*.egg-info" \) \
+	       -prune -exec rm -rf {} +
+	rm -rf build dist htmlcov .coverage $(ARTIFACTS)
+
+.PHONY: distclean
+distclean: clean  ## Also remove the virtualenv.
+	rm -rf $(VENV)

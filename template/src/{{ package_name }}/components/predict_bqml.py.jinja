@@ -1,0 +1,28 @@
+"""Batch score with BigQuery ML.PREDICT."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=["google-cloud-bigquery>=3.25"],
+)
+def predict_bqml(
+    project_id: str,
+    model_id: str,
+    source_table: str,
+    destination_table: str,
+) -> str:
+    """Write ``ML.PREDICT`` results into ``destination_table``; return that table id."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    sql = f"""
+    CREATE OR REPLACE TABLE `{destination_table}` AS
+    SELECT *
+    FROM ML.PREDICT(MODEL `{model_id}`, TABLE `{source_table}`)
+    """
+    print(sql)
+    client.query(sql).result()
+    print(f"Wrote predictions to {destination_table}")
+    return destination_table

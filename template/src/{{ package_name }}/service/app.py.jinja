@@ -1,0 +1,131 @@
+# Cloud Run HTTP service: Pub/Sub push → Vertex AI PipelineJob submit.
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from google.cloud import storage
+
+from {{ package_name }}.trigger.submit import submit_pipeline
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("pipeline-trigger")
+
+app = FastAPI(title="{{ project_name }} pipeline trigger", version="0.1.0")
+
+
+def _env(name: str, default: str | None = None) -> str:
+    value = os.environ.get(name, default)
+    if value is None or value == "":
+        raise RuntimeError(f"Required environment variable {name} is not set")
+    return value
+
+
+def _download_gcs(uri: str, dest: Path) -> Path:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"Expected gs:// URI, got {uri}")
+    _, _, rest = uri.partition("gs://")
+    bucket_name, _, object_name = rest.partition("/")
+    if not bucket_name or not object_name:
+        raise ValueError(f"Invalid GCS URI: {uri}")
+    client = storage.Client()
+    blob = client.bucket(bucket_name).blob(object_name)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    blob.download_to_filename(str(dest))
+    logger.info("Downloaded %s → %s", uri, dest)
+    return dest
+
+
+def _pipeline_gcs_uri(kind: str) -> str:
+    if kind == "training":
+        return _env("TRAINING_PIPELINE_GCS_URI")
+    if kind == "prediction":
+        return _env("PREDICTION_PIPELINE_GCS_URI")
+    raise ValueError(f"Unknown pipeline kind: {kind}")
+
+
+def _run_submit(kind: str) -> dict[str, Any]:
+    payload_uri = _env("PAYLOAD_GCS_URI")
+    template_uri = _pipeline_gcs_uri(kind)
+    service_account = os.environ.get("TRIGGER_SERVICE_ACCOUNT") or None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        payload_path = _download_gcs(payload_uri, tmp_path / "payload.json")
+        template_path = _download_gcs(template_uri, tmp_path / f"{kind}_pipeline.yaml")
+
+        # Prefer the Cloud Run runtime SA when payload has an empty service_account.
+        payload = json.loads(payload_path.read_text())
+        if service_account and not payload.get("service_account"):
+            payload["service_account"] = service_account
+            payload_path.write_text(json.dumps(payload, indent=2))
+
+        resource_name = submit_pipeline(
+            pipeline_kind=kind,
+            template_path=template_path,
+            payload_path=payload_path,
+        )
+    return {"pipeline_kind": kind, "resource_name": resource_name}
+
+
+def _decode_pubsub_envelope(body: dict[str, Any]) -> dict[str, Any]:
+    message = body.get("message") or {}
+    data_b64 = message.get("data")
+    if not data_b64:
+        return {}
+    raw = base64.b64decode(data_b64).decode("utf-8")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"raw": raw}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/pubsub/{pipeline_kind}")
+async def pubsub_push(pipeline_kind: str, request: Request) -> dict[str, Any]:
+    if pipeline_kind not in {"training", "prediction"}:
+        raise HTTPException(status_code=400, detail="pipeline_kind must be training|prediction")
+
+    body = await request.json()
+    decoded = _decode_pubsub_envelope(body)
+    logger.info("Pub/Sub push kind=%s message=%s", pipeline_kind, decoded)
+
+    # Allow message to override path kind when present and consistent.
+    msg_kind = decoded.get("pipeline_kind")
+    if msg_kind and msg_kind != pipeline_kind:
+        raise HTTPException(
+            status_code=400,
+            detail=f"message pipeline_kind={msg_kind!r} does not match path {pipeline_kind!r}",
+        )
+
+    try:
+        result = _run_submit(pipeline_kind)
+    except Exception as exc:  # noqa: BLE001 — surface to Pub/Sub as non-2xx for retry
+        logger.exception("Failed to submit %s pipeline", pipeline_kind)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"status": "submitted", **result}
+
+
+@app.post("/trigger/{pipeline_kind}")
+def manual_trigger(pipeline_kind: str) -> dict[str, Any]:
+    """Direct HTTP trigger for debugging (protect at the IAM / ingress layer)."""
+    if pipeline_kind not in {"training", "prediction"}:
+        raise HTTPException(status_code=400, detail="pipeline_kind must be training|prediction")
+    try:
+        result = _run_submit(pipeline_kind)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to submit %s pipeline", pipeline_kind)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "submitted", **result}

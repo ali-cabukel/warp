@@ -1,0 +1,45 @@
+output "pipeline_root_bucket" {
+  description = "GCS bucket used for pipeline_root and KFP artifacts"
+  value       = google_storage_bucket.pipeline_root.name
+}
+
+output "cloud_run_uri" {
+  description = "Cloud Run trigger service URL"
+  value       = google_cloud_run_v2_service.trigger.uri
+}
+
+output "training_pubsub_topic" {
+  value = google_pubsub_topic.training.name
+}
+
+output "prediction_pubsub_topic" {
+  value = google_pubsub_topic.prediction.name
+}
+
+output "training_scheduler_job" {
+  value = google_cloud_scheduler_job.training.name
+}
+
+output "prediction_scheduler_job" {
+  value = google_cloud_scheduler_job.prediction.name
+}
+
+output "trigger_service_account" {
+  value = google_service_account.trigger.email
+}
+
+output "artifact_registry_repo" {
+  value = google_artifact_registry_repository.pipelines.name
+}
+
+output "default_trigger_image" {
+  value = local.default_trigger_image
+}
+
+output "training_cron" {
+  value = var.training_cron
+}
+
+output "prediction_cron" {
+  value = var.prediction_cron
+}

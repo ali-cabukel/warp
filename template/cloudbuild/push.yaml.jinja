@@ -1,0 +1,31 @@
+# Push to main: terraform apply.
+# Triggered by terraform google_cloudbuild_trigger.push
+
+substitutions:
+  _TF_DIR: "terraform"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: "hashicorp/terraform:1.9"
+    id: "tf-init"
+    dir: "${_TF_DIR}"
+    args: ["init", "-input=false"]
+
+  - name: "hashicorp/terraform:1.9"
+    id: "tf-validate"
+    dir: "${_TF_DIR}"
+    args: ["validate"]
+
+  - name: "hashicorp/terraform:1.9"
+    id: "tf-plan"
+    dir: "${_TF_DIR}"
+    args: ["plan", "-input=false", "-out=tfplan"]
+
+  - name: "hashicorp/terraform:1.9"
+    id: "tf-apply"
+    dir: "${_TF_DIR}"
+    args: ["apply", "-input=false", "-auto-approve", "tfplan"]
+
+timeout: 1800s

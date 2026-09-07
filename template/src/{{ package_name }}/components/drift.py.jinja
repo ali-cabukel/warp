@@ -1,0 +1,74 @@
+"""Feature drift detection via Population Stability Index (PSI)."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=[
+        "google-cloud-bigquery>=3.25",
+        "pandas>=2.2",
+        "numpy>=1.26",
+        "db-dtypes>=1.2",
+    ],
+)
+def drift_detection(
+    project_id: str,
+    current_table: str,
+    baseline_table: str,
+    feature_columns: list,
+    psi_threshold: float = 0.2,
+    n_bins: int = 10,
+) -> str:
+    """Compare feature distributions; fail if any PSI exceeds ``psi_threshold``.
+
+    Returns a JSON string of per-feature PSI values.
+    """
+    import json
+
+    import numpy as np
+    import pandas as pd
+    from google.cloud import bigquery
+
+    def _psi(expected: np.ndarray, actual: np.ndarray, bins: int) -> float:
+        expected = expected[~np.isnan(expected)]
+        actual = actual[~np.isnan(actual)]
+        if len(expected) == 0 or len(actual) == 0:
+            return 0.0
+        quantiles = np.linspace(0, 1, bins + 1)
+        breaks = np.unique(np.quantile(expected, quantiles))
+        if len(breaks) < 2:
+            return 0.0
+        exp_counts, _ = np.histogram(expected, bins=breaks)
+        act_counts, _ = np.histogram(actual, bins=breaks)
+        exp_pct = exp_counts / max(exp_counts.sum(), 1)
+        act_pct = act_counts / max(act_counts.sum(), 1)
+        exp_pct = np.clip(exp_pct, 1e-6, None)
+        act_pct = np.clip(act_pct, 1e-6, None)
+        return float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct)))
+
+    client = bigquery.Client(project=project_id)
+    cols = ", ".join(f"`{c}`" for c in feature_columns)
+    current = client.query(f"SELECT {cols} FROM `{current_table}`").to_dataframe()
+    baseline = client.query(f"SELECT {cols} FROM `{baseline_table}`").to_dataframe()
+
+    psi_scores: dict[str, float] = {}
+    for col in feature_columns:
+        if not pd.api.types.is_numeric_dtype(current[col]):
+            print(f"Skipping non-numeric feature {col}")
+            continue
+        expected = baseline[col].to_numpy(dtype=float)
+        actual = current[col].to_numpy(dtype=float)
+        score = _psi(expected, actual, n_bins)
+        psi_scores[col] = score
+        print(f"PSI[{col}]={score:.4f}")
+
+    offenders = {k: v for k, v in psi_scores.items() if v > psi_threshold}
+    if offenders:
+        raise RuntimeError(
+            f"Drift detected (threshold={psi_threshold}): {json.dumps(offenders)}"
+        )
+
+    payload = json.dumps({"psi": psi_scores, "threshold": psi_threshold})
+    print(payload)
+    return payload

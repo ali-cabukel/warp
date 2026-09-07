@@ -1,0 +1,40 @@
+"""Smoke tests: compile training and prediction pipelines locally."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from {{ package_name }}.pipelines.prediction import compile_pipeline as compile_prediction
+from {{ package_name }}.pipelines.training import compile_pipeline as compile_training
+from {{ package_name }}.trigger.submit import (
+    _prediction_parameter_values,
+    _training_parameter_values,
+    load_payload,
+)
+
+
+def test_compile_training_pipeline(tmp_path: Path) -> None:
+    out = tmp_path / "training_pipeline.yaml"
+    compile_training(str(out))
+    assert out.is_file()
+    text = out.read_text()
+    assert "pipelineSpec" in text or "components" in text
+
+
+def test_compile_prediction_pipeline(tmp_path: Path) -> None:
+    out = tmp_path / "prediction_pipeline.yaml"
+    compile_prediction(str(out))
+    assert out.is_file()
+    text = out.read_text()
+    assert "pipelineSpec" in text or "components" in text
+
+
+def test_parameter_mappings_cover_pipeline_inputs() -> None:
+    payload = load_payload(Path(__file__).resolve().parents[1] / "payload.json")
+    train_params = _training_parameter_values(payload)
+    pred_params = _prediction_parameter_values(payload)
+
+    assert train_params["project_id"] == payload["project_id"]
+    assert train_params["feature_columns"] == payload["feature_columns"]
+    assert pred_params["prediction_source_table"] == payload["prediction_source_table"]
+    assert "model_resource_name" in pred_params

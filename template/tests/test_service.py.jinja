@@ -1,0 +1,33 @@
+"""Unit tests for the Cloud Run Pub/Sub trigger service helpers."""
+
+from __future__ import annotations
+
+import base64
+import json
+
+from {{ package_name }}.service.app import _decode_pubsub_envelope, app
+
+
+def test_decode_pubsub_envelope_json() -> None:
+    payload = {"pipeline_kind": "training", "source": "cloud-scheduler"}
+    body = {
+        "message": {
+            "data": base64.b64encode(json.dumps(payload).encode()).decode(),
+            "messageId": "1",
+        }
+    }
+    assert _decode_pubsub_envelope(body) == payload
+
+
+def test_decode_pubsub_envelope_empty() -> None:
+    assert _decode_pubsub_envelope({}) == {}
+    assert _decode_pubsub_envelope({"message": {}}) == {}
+
+
+def test_healthz() -> None:
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

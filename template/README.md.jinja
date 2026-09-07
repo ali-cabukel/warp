@@ -1,0 +1,104 @@
+# {{ project_name }}
+
+{{ project_description }}
+
+Vertex AI Pipelines (KFP v2) project for **BigQuery ML** binary/multiclass **classification**,
+with **Cloud Scheduler → Pub/Sub → Cloud Run** triggers and **Cloud Build** CI/CD.
+
+## Pipelines
+
+**Training:** ingest (BQ) → drift (PSI) → split → `CREATE MODEL` → `ML.EVALUATE` → metrics → Vertex Model Registry
+
+**Prediction:** resolve model (registry → BQML id) → ingest → `ML.PREDICT` → summary
+
+## Trigger path
+
+```text
+Cloud Scheduler (cron in terraform.tfvars)
+        │
+        ▼
+   Pub/Sub topic (training | prediction)
+        │  push + OIDC
+        ▼
+   Cloud Run  /pubsub/{kind}
+        │
+        ▼
+   Vertex AI PipelineJob  (payload + KFP YAML from GCS)
+```
+
+## Setup
+
+```bash
+make setup
+# edit payload.json — project_id, tables, features, thresholds, service_account
+# edit terraform/terraform.tfvars — crons, github_owner/repo, bucket
+```
+
+Prerequisites:
+
+- GCP project with Vertex AI, BigQuery, GCS, Pub/Sub, Cloud Run, Scheduler, Cloud Build APIs
+- ADC or a service account with rights to apply Terraform and submit pipelines
+- GitHub repo connected to Cloud Build (for triggers)
+
+## Compile and run (local)
+
+```bash
+make compile
+make trigger-training
+make trigger-prediction
+```
+
+## Infrastructure
+
+Cron schedules live in [`terraform/terraform.tfvars`](terraform/terraform.tfvars):
+
+```hcl
+training_cron   = "{{ training_cron }}"
+prediction_cron = "{{ prediction_cron }}"
+```
+
+```bash
+make tf-init
+make tf-plan
+make tf-apply
+```
+
+After the first release image exists, set `trigger_image` in tfvars (or let Cloud Build update Cloud Run).
+
+## CI/CD (Cloud Build)
+
+| Trigger | When | Config |
+|---------|------|--------|
+| PR | PR → `main` | [`cloudbuild/pr.yaml`](cloudbuild/pr.yaml) — pre-commit, unit tests, KFP compile |
+| Push | push → `main` | [`cloudbuild/push.yaml`](cloudbuild/push.yaml) — `terraform apply` |
+| Release | tag `vX.Y.Z` | [`cloudbuild/release.yaml`](cloudbuild/release.yaml) — docker build/push, copy KFP artifacts to GCS, deploy Cloud Run, optional e2e |
+
+Connect the GitHub app / Cloud Build repository, set `github_owner` + `github_repo` in tfvars, then `make tf-apply`.
+
+## payload.json
+
+| Key | Purpose |
+|-----|---------|
+| `project_id` / `region` | GCP project and Vertex location |
+| `pipeline_root` | GCS URI for pipeline artifacts |
+| `service_account` | Optional SA email for `PipelineJob.submit` |
+| `source_table` / `baseline_table` | Training + drift baseline tables |
+| `feature_columns` / `label_column` | Model schema |
+| `model_type` | `LOGISTIC_REG` or `BOOSTED_TREE_CLASSIFIER` |
+| `drift_psi_threshold` / `min_roc_auc` | Quality gates |
+| `model_resource_name` | Optional Vertex model id for prediction (else display name lookup) |
+
+## Layout
+
+```text
+src/{{ package_name }}/
+  components/   # KFP @component ops
+  pipelines/    # training + prediction DSL
+  trigger/      # aiplatform.PipelineJob submitter
+  service/      # Cloud Run FastAPI (Pub/Sub push)
+terraform/      # Pub/Sub, Cloud Run, Scheduler, Cloud Build triggers
+cloudbuild/     # pr / push / release configs
+payload.json
+Dockerfile
+Makefile
+```

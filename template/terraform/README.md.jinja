@@ -1,0 +1,37 @@
+# Terraform for {{ project_name }}
+
+Provisions:
+
+- GCS pipeline root bucket
+- Artifact Registry (Cloud Run image)
+- Pub/Sub topics + push subscriptions (training / prediction + DLQ)
+- Cloud Run trigger service
+- Cloud Scheduler cron jobs (schedules in `terraform.tfvars`)
+- Cloud Build triggers (PR / push / release) when `github_owner` + `github_repo` are set
+- IAM for trigger, scheduler, and Cloud Build service accounts
+
+## Quick start
+
+```bash
+# from repo root
+make tf-init
+make tf-plan
+make tf-apply
+```
+
+Edit cron schedules and GitHub settings in [`terraform.tfvars`](terraform.tfvars):
+
+```hcl
+training_cron   = "{{ training_cron }}"
+prediction_cron = "{{ prediction_cron }}"
+github_owner    = "your-org"
+github_repo     = "{{ project_slug }}"
+```
+
+## Bootstrap order
+
+1. `make compile` and upload artifacts (`make publish-artifacts BUCKET=...`) or cut a release tag.
+2. Build/push the Cloud Run image (release Cloud Build) so the service has a runnable image.
+3. `terraform apply` (or push to `main` once the push trigger exists).
+
+Cloud Build GitHub triggers require the Cloud Build GitHub app connection for `github_owner`/`github_repo`.

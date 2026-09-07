@@ -1,0 +1,28 @@
+{
+  "project_id": "{{ gcp_project_id }}",
+  "region": "{{ gcp_region }}",
+  "pipeline_root": "gs://{{ pipeline_root_bucket }}/pipeline_root",
+  "service_account": "",
+  "bq_dataset": "{{ bq_dataset }}",
+  "source_table": "{{ gcp_project_id }}.{{ bq_dataset }}.training_source",
+  "baseline_table": "{{ gcp_project_id }}.{{ bq_dataset }}.training_baseline",
+  "label_column": "{{ label_column }}",
+  "feature_columns": [
+{% for col in feature_columns.split(',') %}    "{{ col | trim }}"{% if not loop.last %},{% endif %}
+
+{% endfor %}  ],
+  "row_id_column": "row_id",
+  "model_display_name": "{{ project_slug }}-classifier",
+  "model_type": "{{ model_type }}",
+  "bqml_model_name": "{{ package_name }}_classifier",
+  "split_ratio": {
+    "train": 0.7,
+    "eval": 0.15,
+    "test": 0.15
+  },
+  "drift_psi_threshold": 0.2,
+  "min_roc_auc": 0.7,
+  "prediction_source_table": "{{ gcp_project_id }}.{{ bq_dataset }}.prediction_source",
+  "prediction_destination_table": "{{ gcp_project_id }}.{{ bq_dataset }}.prediction_scores",
+  "model_resource_name": ""
+}

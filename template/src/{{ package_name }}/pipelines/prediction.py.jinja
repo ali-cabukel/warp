@@ -1,0 +1,64 @@
+"""Prediction pipeline: resolve model → ingest → predict → postprocess."""
+
+from kfp import dsl
+
+from {{ package_name }}.components.ingest_bq import ingest_bq
+from {{ package_name }}.components.postprocess import postprocess_predictions
+from {{ package_name }}.components.predict_bqml import predict_bqml
+from {{ package_name }}.components.resolve_model import resolve_model
+
+
+@dsl.pipeline(
+    name="{{ project_slug }}-prediction",
+    description="BQML classification prediction pipeline for {{ project_name }}",
+)
+def prediction_pipeline(
+    project_id: str,
+    region: str,
+    prediction_source_table: str,
+    prediction_destination_table: str,
+    model_display_name: str = "{{ project_slug }}-classifier",
+    model_resource_name: str = "",
+):
+    resolved = resolve_model(
+        project_id=project_id,
+        region=region,
+        model_display_name=model_display_name,
+        model_resource_name=model_resource_name,
+    )
+
+    ingested = ingest_bq(
+        project_id=project_id,
+        source_table=prediction_source_table,
+    )
+    ingested.after(resolved)
+
+    predicted = predict_bqml(
+        project_id=project_id,
+        model_id=resolved.output,
+        source_table=ingested.output,
+        destination_table=prediction_destination_table,
+    )
+
+    postprocess_predictions(
+        project_id=project_id,
+        prediction_table=predicted.output,
+    )
+
+
+def compile_pipeline(output_path: str) -> None:
+    """Compile this pipeline to a YAML file."""
+    from kfp import compiler
+
+    compiler.Compiler().compile(
+        pipeline_func=prediction_pipeline,
+        package_path=output_path,
+    )
+
+
+if __name__ == "__main__":
+    import sys
+
+    out = sys.argv[1] if len(sys.argv) > 1 else "artifacts/prediction_pipeline.yaml"
+    compile_pipeline(out)
+    print(f"Compiled prediction pipeline → {out}")

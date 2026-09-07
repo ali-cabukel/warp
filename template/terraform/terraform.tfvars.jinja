@@ -1,0 +1,32 @@
+# Environment defaults + training / prediction cron schedules for Cloud Scheduler.
+
+project_id             = "{{ gcp_project_id }}"
+region                 = "{{ gcp_region }}"
+vertex_region          = "{{ gcp_region }}"
+name_prefix            = "{{ project_slug }}"
+pipeline_root_bucket   = "{{ pipeline_root_bucket }}"
+artifact_registry_repo = "{{ project_slug }}-pipelines"
+
+# Cron jobs (UTC). Adjust for your batch windows.
+training_cron      = "{{ training_cron }}"
+prediction_cron    = "{{ prediction_cron }}"
+scheduler_timezone = "UTC"
+
+payload_gcs_object          = "config/payload.json"
+training_pipeline_object    = "kfp/training_pipeline.yaml"
+prediction_pipeline_object  = "kfp/prediction_pipeline.yaml"
+
+# Optional override after the first release image is published, e.g.
+# trigger_image = "{{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/{{ project_slug }}-pipelines/pipeline-trigger:latest"
+# Empty uses a public Cloud Run hello image until release Cloud Build deploys the real service.
+trigger_image = ""
+
+enable_cloud_build_triggers = true
+github_owner                = "{{ github_owner }}"
+github_repo                 = "{{ github_repo }}"
+run_e2e_on_release          = false
+
+labels = {
+  app     = "{{ project_slug }}"
+  managed = "terraform"
+}

@@ -1,0 +1,5 @@
+"""Submit compiled pipelines to Vertex AI via google.cloud.aiplatform."""
+
+from {{ package_name }}.trigger.submit import load_payload, submit_pipeline
+
+__all__ = ["load_payload", "submit_pipeline"]

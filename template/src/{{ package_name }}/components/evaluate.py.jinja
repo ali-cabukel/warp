@@ -1,0 +1,58 @@
+"""Evaluate a BQML classification model and gate on ROC-AUC."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=[
+        "google-cloud-bigquery>=3.25",
+        "pandas>=2.2",
+        "db-dtypes>=1.2",
+    ],
+)
+def evaluate_bqml(
+    project_id: str,
+    model_id: str,
+    eval_table: str,
+    min_roc_auc: float = 0.7,
+) -> str:
+    """Run ``ML.EVALUATE``; fail if ``roc_auc`` is below ``min_roc_auc``.
+
+    Returns a JSON string of evaluation metrics.
+    """
+    import json
+
+    import pandas as pd
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    sql = f"""
+    SELECT *
+    FROM ML.EVALUATE(MODEL `{model_id}`, TABLE `{eval_table}`)
+    """
+    print(sql)
+    df = client.query(sql).to_dataframe()
+    if df.empty:
+        raise RuntimeError("ML.EVALUATE returned no rows")
+
+    row = df.iloc[0]
+    metrics: dict[str, float] = {}
+    for col in df.columns:
+        value = row[col]
+        try:
+            if pd.isna(value):
+                continue
+            metrics[col] = float(value)
+        except (TypeError, ValueError):
+            continue
+
+    roc_auc = metrics.get("roc_auc")
+    if roc_auc is None:
+        raise RuntimeError(f"roc_auc missing from ML.EVALUATE output: {metrics}")
+
+    print(json.dumps(metrics, indent=2))
+    if roc_auc < min_roc_auc:
+        raise RuntimeError(f"roc_auc={roc_auc:.4f} below gate {min_roc_auc:.4f}")
+
+    return json.dumps(metrics)
