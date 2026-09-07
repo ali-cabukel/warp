@@ -1,0 +1,108 @@
+"""Training pipeline: ingest → drift → split → train → evaluate → postprocess → register."""
+
+from kfp import dsl
+
+from {{ package_name }}.components.drift import drift_detection
+from {{ package_name }}.components.evaluate import evaluate_bqml
+from {{ package_name }}.components.ingest_bq import ingest_bq
+from {{ package_name }}.components.postprocess import postprocess_metrics
+from {{ package_name }}.components.register_model import register_model
+from {{ package_name }}.components.split import split_table
+from {{ package_name }}.components.train_bqml import train_bqml
+
+
+@dsl.pipeline(
+    name="{{ project_slug }}-training",
+    description="BQML classification training pipeline for {{ project_name }}",
+)
+def training_pipeline(
+    project_id: str,
+    region: str,
+    bq_dataset: str,
+    source_table: str,
+    baseline_table: str,
+    label_column: str,
+    feature_columns: list,
+    row_id_column: str = "row_id",
+    model_display_name: str = "{{ project_slug }}-classifier",
+    model_type: str = "{{ model_type }}",
+    bqml_model_name: str = "{{ package_name }}_classifier",
+    train_ratio: float = 0.7,
+    eval_ratio: float = 0.15,
+    drift_psi_threshold: float = 0.2,
+    min_roc_auc: float = 0.7,
+    artifact_gcs_uri: str = "gs://{{ pipeline_root_bucket }}/artifacts/training",
+):
+    ingested = ingest_bq(
+        project_id=project_id,
+        source_table=source_table,
+    )
+
+    drift = drift_detection(
+        project_id=project_id,
+        current_table=ingested.output,
+        baseline_table=baseline_table,
+        feature_columns=feature_columns,
+        psi_threshold=drift_psi_threshold,
+    )
+    drift.after(ingested)
+
+    splits = split_table(
+        project_id=project_id,
+        source_table=ingested.output,
+        bq_dataset=bq_dataset,
+        row_id_column=row_id_column,
+        train_ratio=train_ratio,
+        eval_ratio=eval_ratio,
+    )
+    splits.after(drift)
+
+    trained = train_bqml(
+        project_id=project_id,
+        bq_dataset=bq_dataset,
+        train_table=splits.outputs["train_table"],
+        label_column=label_column,
+        feature_columns=feature_columns,
+        model_type=model_type,
+        bqml_model_name=bqml_model_name,
+    )
+
+    evaluated = evaluate_bqml(
+        project_id=project_id,
+        model_id=trained.output,
+        eval_table=splits.outputs["eval_table"],
+        min_roc_auc=min_roc_auc,
+    )
+
+    metrics_artifact = postprocess_metrics(
+        metrics_json=evaluated.output,
+        model_id=trained.output,
+        gcs_uri=artifact_gcs_uri,
+    )
+
+    register_model(
+        project_id=project_id,
+        region=region,
+        model_display_name=model_display_name,
+        bqml_model_id=trained.output,
+        metrics_json=evaluated.output,
+        artifact_gcs_uri=artifact_gcs_uri,
+    ).after(metrics_artifact)
+
+
+def compile_pipeline(output_path: str) -> None:
+    """Compile this pipeline to a YAML file."""
+    from kfp import compiler
+
+    compiler.Compiler().compile(
+        pipeline_func=training_pipeline,
+        package_path=output_path,
+    )
+
+
+if __name__ == "__main__":
+    import sys
+
+    out = sys.argv[1] if len(sys.argv) > 1 else "artifacts/training_pipeline.yaml"
+    compile_pipeline(out)
+    print(f"Compiled training pipeline → {out}")

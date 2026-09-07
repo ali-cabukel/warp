@@ -1,0 +1,100 @@
+# Release tag (vX.Y.Z): build/push Cloud Run image, publish KFP YAML + payload to GCS,
+# deploy Cloud Run revision, optionally run e2e submit smoke.
+# Triggered by terraform google_cloudbuild_trigger.release
+
+substitutions:
+  _REGION: "{{ gcp_region }}"
+  _ARTIFACT_REGISTRY_REPO: "{{ project_slug }}-pipelines"
+  _PIPELINE_ROOT_BUCKET: "{{ pipeline_root_bucket }}"
+  _PAYLOAD_OBJECT: "config/payload.json"
+  _TRAINING_PIPELINE_OBJECT: "kfp/training_pipeline.yaml"
+  _PREDICTION_PIPELINE_OBJECT: "kfp/prediction_pipeline.yaml"
+  _CLOUD_RUN_SERVICE: "{{ project_slug }}-trigger"
+  _RUN_E2E: "false"
+  _PYTHON_VERSION: "{{ python_version }}"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
+steps:
+  - name: "python:${_PYTHON_VERSION}"
+    id: "compile-kfp"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        pip install -e .
+        mkdir -p artifacts
+        python -m {{ package_name }}.pipelines.training artifacts/training_pipeline.yaml
+        python -m {{ package_name }}.pipelines.prediction artifacts/prediction_pipeline.yaml
+
+  - name: "gcr.io/cloud-builders/gcloud"
+    id: "publish-artifacts"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gsutil cp payload.json "gs://${_PIPELINE_ROOT_BUCKET}/${_PAYLOAD_OBJECT}"
+        gsutil cp artifacts/training_pipeline.yaml \
+          "gs://${_PIPELINE_ROOT_BUCKET}/${_TRAINING_PIPELINE_OBJECT}"
+        gsutil cp artifacts/prediction_pipeline.yaml \
+          "gs://${_PIPELINE_ROOT_BUCKET}/${_PREDICTION_PIPELINE_OBJECT}"
+        echo "Published KFP artifacts to gs://${_PIPELINE_ROOT_BUCKET}/"
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "docker-build"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger:$SHORT_SHA"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger:latest"
+      - "."
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "docker-push"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger"
+
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-cloud-run"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run services update "${_CLOUD_RUN_SERVICE}" \
+          --region="${_REGION}" \
+          --image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger:$SHORT_SHA" \
+          --quiet
+
+  - name: "python:${_PYTHON_VERSION}"
+    id: "e2e-optional"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [[ "${_RUN_E2E}" != "true" ]]; then
+          echo "Skipping e2e (set run_e2e_on_release=true / _RUN_E2E=true to enable)"
+          exit 0
+        fi
+        python -m pip install --upgrade pip
+        pip install -e .
+        # Smoke: submit training only if ADC / Cloud Build SA can call Vertex.
+        python -m {{ package_name }}.trigger.submit training \
+          --template artifacts/training_pipeline.yaml \
+          --payload payload.json
+        echo "E2E training submit OK"
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/pipeline-trigger:latest"
+
+timeout: 3600s

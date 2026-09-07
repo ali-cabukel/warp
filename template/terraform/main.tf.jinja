@@ -1,0 +1,393 @@
+locals {
+  labels = merge(
+    {
+      app = var.name_prefix
+    },
+    var.labels,
+  )
+
+  training_topic_id   = "${var.name_prefix}-training"
+  prediction_topic_id = "${var.name_prefix}-prediction"
+
+  trigger_sa_id    = "${var.name_prefix}-trigger"
+  scheduler_sa_id  = "${var.name_prefix}-scheduler"
+  cloudbuild_sa_id = "${var.name_prefix}-cloudbuild"
+
+  default_trigger_image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repo}/pipeline-trigger:latest"
+  # Public hello image so the first apply succeeds before the release pipeline publishes.
+  bootstrap_image = "us-docker.pkg.dev/cloudrun/container/hello"
+  trigger_image   = var.trigger_image != "" ? var.trigger_image : local.bootstrap_image
+
+  cloudbuild_sa_email = var.cloudbuild_sa_email != "" ? var.cloudbuild_sa_email : google_service_account.cloudbuild[0].email
+}
+
+# ---- APIs ------------------------------------------------------------------
+
+resource "google_project_service" "services" {
+  for_each = toset([
+    "aiplatform.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "bigquery.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "iam.googleapis.com",
+    "pubsub.googleapis.com",
+    "run.googleapis.com",
+    "secretmanager.googleapis.com",
+    "storage.googleapis.com",
+  ])
+
+  project            = var.project_id
+  service            = each.value
+  disable_on_destroy = false
+}
+
+# ---- GCS -------------------------------------------------------------------
+
+resource "google_storage_bucket" "pipeline_root" {
+  name                        = var.pipeline_root_bucket
+  location                    = var.region
+  uniform_bucket_level_access = true
+  force_destroy               = false
+
+  versioning {
+    enabled = true
+  }
+
+  labels = local.labels
+
+  depends_on = [google_project_service.services]
+}
+
+# ---- Artifact Registry -----------------------------------------------------
+
+resource "google_artifact_registry_repository" "pipelines" {
+  location      = var.region
+  repository_id = var.artifact_registry_repo
+  description   = "Container images for {{ project_name }} pipeline trigger"
+  format        = "DOCKER"
+  labels        = local.labels
+
+  depends_on = [google_project_service.services]
+}
+
+# ---- Service accounts ------------------------------------------------------
+
+resource "google_service_account" "trigger" {
+  account_id   = trimsuffix(substr(replace(local.trigger_sa_id, "_", "-"), 0, 30), "-")
+  display_name = "{{ project_name }} pipeline trigger (Cloud Run)"
+}
+
+resource "google_service_account" "scheduler" {
+  account_id   = trimsuffix(substr(replace(local.scheduler_sa_id, "_", "-"), 0, 30), "-")
+  display_name = "{{ project_name }} Cloud Scheduler publisher"
+}
+
+resource "google_service_account" "cloudbuild" {
+  count = var.cloudbuild_sa_email == "" ? 1 : 0
+
+  account_id   = trimsuffix(substr(replace(local.cloudbuild_sa_id, "_", "-"), 0, 30), "-")
+  display_name = "{{ project_name }} Cloud Build"
+}
+
+resource "google_project_iam_member" "trigger_roles" {
+  for_each = toset([
+    "roles/aiplatform.user",
+    "roles/bigquery.dataEditor",
+    "roles/bigquery.jobUser",
+    "roles/storage.objectAdmin",
+    "roles/logging.logWriter",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.trigger.email}"
+}
+
+resource "google_project_iam_member" "cloudbuild_roles" {
+  for_each = toset([
+    "roles/cloudbuild.builds.builder",
+    "roles/artifactregistry.writer",
+    "roles/storage.admin",
+    "roles/run.admin",
+    "roles/iam.serviceAccountUser",
+    "roles/iam.serviceAccountAdmin",
+    "roles/aiplatform.user",
+    "roles/pubsub.admin",
+    "roles/cloudscheduler.admin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/serviceusage.serviceUsageAdmin",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${local.cloudbuild_sa_email}"
+}
+
+resource "google_storage_bucket_iam_member" "trigger_bucket" {
+  bucket = google_storage_bucket.pipeline_root.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.trigger.email}"
+}
+
+# ---- Pub/Sub ---------------------------------------------------------------
+
+resource "google_pubsub_topic" "training" {
+  name   = local.training_topic_id
+  labels = local.labels
+
+  depends_on = [google_project_service.services]
+}
+
+resource "google_pubsub_topic" "prediction" {
+  name   = local.prediction_topic_id
+  labels = local.labels
+
+  depends_on = [google_project_service.services]
+}
+
+resource "google_pubsub_topic" "training_dlq" {
+  name   = "${local.training_topic_id}-dlq"
+  labels = local.labels
+}
+
+resource "google_pubsub_topic" "prediction_dlq" {
+  name   = "${local.prediction_topic_id}-dlq"
+  labels = local.labels
+}
+
+# ---- Cloud Run -------------------------------------------------------------
+
+resource "google_cloud_run_v2_service" "trigger" {
+  name     = "${var.name_prefix}-trigger"
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.trigger.email
+
+    containers {
+      image = local.trigger_image
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+      env {
+        name  = "VERTEX_REGION"
+        value = var.vertex_region
+      }
+      env {
+        name  = "PIPELINE_ROOT_BUCKET"
+        value = google_storage_bucket.pipeline_root.name
+      }
+      env {
+        name  = "PAYLOAD_GCS_URI"
+        value = "gs://${google_storage_bucket.pipeline_root.name}/${var.payload_gcs_object}"
+      }
+      env {
+        name  = "TRAINING_PIPELINE_GCS_URI"
+        value = "gs://${google_storage_bucket.pipeline_root.name}/${var.training_pipeline_object}"
+      }
+      env {
+        name  = "PREDICTION_PIPELINE_GCS_URI"
+        value = "gs://${google_storage_bucket.pipeline_root.name}/${var.prediction_pipeline_object}"
+      }
+      env {
+        name  = "TRIGGER_SERVICE_ACCOUNT"
+        value = google_service_account.trigger.email
+      }
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+      }
+    }
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 5
+    }
+
+    labels = local.labels
+  }
+
+  labels = local.labels
+
+  depends_on = [
+    google_project_service.services,
+    google_artifact_registry_repository.pipelines,
+  ]
+
+  lifecycle {
+    ignore_changes = [
+      # Image tag is updated by release Cloud Build.
+      template[0].containers[0].image,
+    ]
+  }
+}
+
+resource "google_cloud_run_v2_service_iam_member" "pubsub_invoker" {
+  project  = google_cloud_run_v2_service.trigger.project
+  location = google_cloud_run_v2_service.trigger.location
+  name     = google_cloud_run_v2_service.trigger.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+# Allow the Pub/Sub push identity (same scheduler SA used as OIDC) — also grant
+# to the Pub/Sub service agent via push config oidc_service_account_email.
+resource "google_cloud_run_v2_service_iam_member" "pubsub_sa_invoker" {
+  project  = google_cloud_run_v2_service.trigger.project
+  location = google_cloud_run_v2_service.trigger.location
+  name     = google_cloud_run_v2_service.trigger.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+resource "google_pubsub_subscription" "training_push" {
+  name  = "${local.training_topic_id}-push"
+  topic = google_pubsub_topic.training.name
+
+  ack_deadline_seconds = 120
+
+  push_config {
+    push_endpoint = "${google_cloud_run_v2_service.trigger.uri}/pubsub/training"
+
+    oidc_token {
+      service_account_email = google_service_account.scheduler.email
+      audience              = google_cloud_run_v2_service.trigger.uri
+    }
+  }
+
+  dead_letter_policy {
+    dead_letter_topic     = google_pubsub_topic.training_dlq.id
+    max_delivery_attempts = 5
+  }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
+  }
+
+  labels = local.labels
+
+  depends_on = [
+    google_cloud_run_v2_service_iam_member.pubsub_invoker,
+    google_cloud_run_v2_service_iam_member.pubsub_sa_invoker,
+  ]
+}
+
+resource "google_pubsub_subscription" "prediction_push" {
+  name  = "${local.prediction_topic_id}-push"
+  topic = google_pubsub_topic.prediction.name
+
+  ack_deadline_seconds = 120
+
+  push_config {
+    push_endpoint = "${google_cloud_run_v2_service.trigger.uri}/pubsub/prediction"
+
+    oidc_token {
+      service_account_email = google_service_account.scheduler.email
+      audience              = google_cloud_run_v2_service.trigger.uri
+    }
+  }
+
+  dead_letter_policy {
+    dead_letter_topic     = google_pubsub_topic.prediction_dlq.id
+    max_delivery_attempts = 5
+  }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
+  }
+
+  labels = local.labels
+
+  depends_on = [
+    google_cloud_run_v2_service_iam_member.pubsub_invoker,
+    google_cloud_run_v2_service_iam_member.pubsub_sa_invoker,
+  ]
+}
+
+resource "google_pubsub_topic_iam_member" "scheduler_publish_training" {
+  topic  = google_pubsub_topic.training.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+resource "google_pubsub_topic_iam_member" "scheduler_publish_prediction" {
+  topic  = google_pubsub_topic.prediction.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+# Pub/Sub needs permission to forward to DLQ and to mint OIDC tokens.
+resource "google_pubsub_topic_iam_member" "pubsub_dlq_training" {
+  topic  = google_pubsub_topic.training_dlq.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_pubsub_topic_iam_member" "pubsub_dlq_prediction" {
+  topic  = google_pubsub_topic.prediction_dlq.name
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_service_account_iam_member" "pubsub_token_creator" {
+  service_account_id = google_service_account.scheduler.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+# ---- Cloud Scheduler -------------------------------------------------------
+
+resource "google_cloud_scheduler_job" "training" {
+  name        = "${var.name_prefix}-training"
+  description = "Cron trigger for {{ project_name }} training pipeline"
+  schedule    = var.training_cron
+  time_zone   = var.scheduler_timezone
+  region      = var.region
+
+  pubsub_target {
+    topic_name = google_pubsub_topic.training.id
+    data = base64encode(jsonencode({
+      pipeline_kind = "training"
+      source        = "cloud-scheduler"
+    }))
+  }
+
+  depends_on = [
+    google_project_service.services,
+    google_pubsub_topic_iam_member.scheduler_publish_training,
+  ]
+}
+
+resource "google_cloud_scheduler_job" "prediction" {
+  name        = "${var.name_prefix}-prediction"
+  description = "Cron trigger for {{ project_name }} prediction pipeline"
+  schedule    = var.prediction_cron
+  time_zone   = var.scheduler_timezone
+  region      = var.region
+
+  pubsub_target {
+    topic_name = google_pubsub_topic.prediction.id
+    data = base64encode(jsonencode({
+      pipeline_kind = "prediction"
+      source        = "cloud-scheduler"
+    }))
+  }
+
+  depends_on = [
+    google_project_service.services,
+    google_pubsub_topic_iam_member.scheduler_publish_prediction,
+  ]
+}

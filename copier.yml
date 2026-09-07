@@ -1,0 +1,152 @@
+# Copier configuration for the Warp Vertex AI / BQML pipeline template.
+# Docs: https://copier.readthedocs.io/en/stable/
+
+_min_copier_version: "9.0.0"
+_subdirectory: template
+_answers_file: .copier-answers.yml
+_envops:
+  keep_trailing_newline: true
+  trim_blocks: true
+  lstrip_blocks: true
+
+_exclude:
+  - "copier.yml"
+  - "~*"
+  - "*.py[co]"
+  - "__pycache__"
+  - ".git"
+  - ".DS_Store"
+
+_message_after_copy: |
+  Project scaffolded.
+
+  Next steps:
+      1. cd {{ project_slug }}
+      2. make setup
+      3. Edit payload.json and terraform/terraform.tfvars
+      4. make compile
+      5. make tf-init && make tf-apply
+      6. make trigger-training   # or wait for Scheduler → Pub/Sub → Cloud Run
+
+_message_after_update: |
+  Project updated to the latest template revision.
+  Review changes with `git diff` and reinstall if dependencies changed.
+
+# -------- Questions --------
+
+project_name:
+  type: str
+  help: "Human-readable project name"
+  default: "Warp Classification Pipeline"
+  validator: "{% if not project_name %}project_name cannot be empty{% endif %}"
+
+project_slug:
+  type: str
+  help: "Project directory name (kebab-case)"
+  default: "{{ project_name | lower | replace(' ', '-') | replace('_', '-') }}"
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9\-]*$')) %}
+    project_slug must be lowercase letters, digits and hyphens, starting with a letter
+    {% endif %}
+
+package_name:
+  type: str
+  help: "Importable Python package name (snake_case)"
+  default: "{{ project_slug | replace('-', '_') }}"
+  validator: >-
+    {% if not (package_name | regex_search('^[a-z][a-z0-9_]*$')) %}
+    package_name must be lowercase letters, digits and underscores, starting with a letter
+    {% endif %}
+
+project_description:
+  type: str
+  help: "Short description of the project"
+  default: "Vertex AI Pipelines template for BQML classification (train + predict)."
+
+author_name:
+  type: str
+  help: "Author / maintainer name"
+  default: "Your Name"
+
+author_email:
+  type: str
+  help: "Author / maintainer email"
+  default: "you@example.com"
+
+python_version:
+  type: str
+  help: "Minimum Python version"
+  default: "3.11"
+  choices:
+    - "3.10"
+    - "3.11"
+    - "3.12"
+    - "3.13"
+
+gcp_project_id:
+  type: str
+  help: "Default GCP project ID (written into payload.json)"
+  default: "my-gcp-project"
+
+gcp_region:
+  type: str
+  help: "Default Vertex AI region"
+  default: "europe-west1"
+
+pipeline_root_bucket:
+  type: str
+  help: "GCS bucket name for pipeline_root (without gs://)"
+  default: "my-pipeline-root"
+
+bq_dataset:
+  type: str
+  help: "BigQuery dataset for intermediate tables and BQML models"
+  default: "ml_pipeline"
+
+model_type:
+  type: str
+  help: "Default BQML classification model type"
+  default: "LOGISTIC_REG"
+  choices:
+    - LOGISTIC_REG
+    - BOOSTED_TREE_CLASSIFIER
+
+label_column:
+  type: str
+  help: "Label column name for classification"
+  default: "label"
+
+feature_columns:
+  type: str
+  help: "Comma-separated feature column names"
+  default: "feature_1,feature_2,feature_3"
+
+training_cron:
+  type: str
+  help: "Cloud Scheduler cron for training (UTC)"
+  default: "0 2 * * *"
+
+prediction_cron:
+  type: str
+  help: "Cloud Scheduler cron for prediction (UTC)"
+  default: "0 6 * * *"
+
+github_owner:
+  type: str
+  help: "GitHub owner/org for Cloud Build triggers (empty disables triggers until set)"
+  default: ""
+
+github_repo:
+  type: str
+  help: "GitHub repository name for Cloud Build triggers"
+  default: "{{ project_slug }}"
+
+license:
+  type: str
+  help: "License"
+  default: "MIT"
+  choices:
+    - MIT
+    - Apache-2.0
+    - BSD-3-Clause
+    - Proprietary

@@ -1,0 +1,70 @@
+"""Hash-based train / eval / test split into BigQuery tables."""
+
+from typing import NamedTuple
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=["google-cloud-bigquery>=3.25"],
+)
+def split_table(
+    project_id: str,
+    source_table: str,
+    bq_dataset: str,
+    row_id_column: str,
+    train_ratio: float = 0.7,
+    eval_ratio: float = 0.15,
+) -> NamedTuple(
+    "SplitOutputs",
+    [
+        ("train_table", str),
+        ("eval_table", str),
+        ("test_table", str),
+    ],
+):
+    """Create train/eval/test tables using a stable hash of ``row_id_column``."""
+    from typing import NamedTuple as NT
+
+    from google.cloud import bigquery
+
+    class SplitOutputs(NT):
+        train_table: str
+        eval_table: str
+        test_table: str
+
+    client = bigquery.Client(project=project_id)
+    train_table = f"{project_id}.{bq_dataset}.train_split"
+    eval_table = f"{project_id}.{bq_dataset}.eval_split"
+    test_table = f"{project_id}.{bq_dataset}.test_split"
+
+    train_cut = train_ratio
+    eval_cut = train_ratio + eval_ratio
+
+    bucket_expr = (
+        f"ABS(MOD(FARM_FINGERPRINT(CAST(`{row_id_column}` AS STRING)), 10000)) / 10000"
+    )
+
+    specs = [
+        (train_table, f"{bucket_expr} < {train_cut}"),
+        (eval_table, f"{bucket_expr} >= {train_cut} AND {bucket_expr} < {eval_cut}"),
+        (test_table, f"{bucket_expr} >= {eval_cut}"),
+    ]
+
+    for dest, predicate in specs:
+        sql = f"""
+        CREATE OR REPLACE TABLE `{dest}` AS
+        SELECT *
+        FROM `{source_table}`
+        WHERE {predicate}
+        """
+        print(sql)
+        client.query(sql).result()
+        print(f"Wrote {dest}")
+
+    return SplitOutputs(
+        train_table=train_table,
+        eval_table=eval_table,
+        test_table=test_table,
+    )

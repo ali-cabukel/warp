@@ -1,0 +1,42 @@
+"""Train a BigQuery ML classification model."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=["google-cloud-bigquery>=3.25"],
+)
+def train_bqml(
+    project_id: str,
+    bq_dataset: str,
+    train_table: str,
+    label_column: str,
+    feature_columns: list,
+    model_type: str,
+    bqml_model_name: str,
+) -> str:
+    """Run ``CREATE OR REPLACE MODEL`` and return the fully-qualified model id."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    model_id = f"{project_id}.{bq_dataset}.{bqml_model_name}"
+    feature_sql = ", ".join(f"`{c}`" for c in feature_columns)
+
+    sql = f"""
+    CREATE OR REPLACE MODEL `{model_id}`
+    OPTIONS(
+      model_type = '{model_type}',
+      input_label_cols = ['{label_column}'],
+      auto_class_weights = TRUE,
+      data_split_method = 'NO_SPLIT'
+    ) AS
+    SELECT
+      {feature_sql},
+      `{label_column}`
+    FROM `{train_table}`
+    """
+    print(sql)
+    client.query(sql).result()
+    print(f"Trained BQML model {model_id}")
+    return model_id

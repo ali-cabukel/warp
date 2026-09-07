@@ -1,0 +1,76 @@
+"""Post-process training metrics and prediction outputs."""
+
+from kfp.dsl import OutputPath, component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=["google-cloud-storage>=2.17"],
+)
+def postprocess_metrics(
+    metrics_json: str,
+    model_id: str,
+    gcs_uri: str,
+    metrics_path: OutputPath(str),
+) -> str:
+    """Persist metrics JSON to GCS and to a local artifact path.
+
+    ``gcs_uri`` should be a ``gs://bucket/prefix`` directory.
+    Returns the full ``gs://`` object URI of ``metrics.json``.
+    """
+    import json
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    from google.cloud import storage
+
+    payload = {
+        "model_id": model_id,
+        "metrics": json.loads(metrics_json),
+    }
+    body = json.dumps(payload, indent=2)
+
+    Path(metrics_path).write_text(body)
+
+    parsed = urlparse(gcs_uri)
+    if parsed.scheme != "gs":
+        raise ValueError(f"gcs_uri must start with gs://, got {gcs_uri}")
+    bucket_name = parsed.netloc
+    prefix = parsed.path.lstrip("/")
+    object_name = f"{prefix.rstrip('/')}/metrics.json" if prefix else "metrics.json"
+
+    client = storage.Client()
+    blob = client.bucket(bucket_name).blob(object_name)
+    blob.upload_from_string(body, content_type="application/json")
+    uri = f"gs://{bucket_name}/{object_name}"
+    print(f"Wrote metrics to {uri}")
+    return uri
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=[
+        "google-cloud-bigquery>=3.25",
+        "pandas>=2.2",
+        "db-dtypes>=1.2",
+    ],
+)
+def postprocess_predictions(
+    project_id: str,
+    prediction_table: str,
+) -> str:
+    """Summarize prediction output row counts; return a JSON summary string."""
+    import json
+
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    table = client.get_table(prediction_table)
+    sql = f"SELECT COUNT(*) AS n FROM `{prediction_table}`"
+    n = list(client.query(sql).result())[0]["n"]
+    summary = {
+        "prediction_table": f"{table.project}.{table.dataset_id}.{table.table_id}",
+        "num_rows": int(n),
+    }
+    print(json.dumps(summary, indent=2))
+    return json.dumps(summary)

@@ -1,0 +1,66 @@
+"""Register a BQML model in Vertex AI Model Registry."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=[
+        "google-cloud-aiplatform>=1.60",
+        "google-cloud-storage>=2.17",
+    ],
+)
+def register_model(
+    project_id: str,
+    region: str,
+    model_display_name: str,
+    bqml_model_id: str,
+    metrics_json: str,
+    artifact_gcs_uri: str,
+) -> str:
+    """Upload a Vertex Model whose artifact metadata points at the BQML model.
+
+    Returns the Vertex Model resource name.
+    """
+    import json
+    from urllib.parse import urlparse
+
+    from google.cloud import aiplatform, storage
+
+    aiplatform.init(project=project_id, location=region)
+
+    metadata = {
+        "bqml_model_id": bqml_model_id,
+        "metrics": json.loads(metrics_json),
+    }
+    body = json.dumps(metadata, indent=2)
+
+    parsed = urlparse(artifact_gcs_uri)
+    if parsed.scheme != "gs":
+        raise ValueError(f"artifact_gcs_uri must start with gs://, got {artifact_gcs_uri}")
+    bucket_name = parsed.netloc
+    prefix = parsed.path.lstrip("/").rstrip("/")
+    object_name = f"{prefix}/model_metadata.json" if prefix else "model_metadata.json"
+
+    storage.Client(project=project_id).bucket(bucket_name).blob(object_name).upload_from_string(
+        body,
+        content_type="application/json",
+    )
+    artifact_uri = f"gs://{bucket_name}/{prefix}" if prefix else f"gs://{bucket_name}"
+
+    # Placeholder serving image: scoring happens via BQML ML.PREDICT, not this container.
+    model = aiplatform.Model.upload(
+        display_name=model_display_name,
+        artifact_uri=artifact_uri,
+        serving_container_image_uri=(
+            "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-5:latest"
+        ),
+        labels={
+            "backend": "bqml",
+            "task": "classification",
+        },
+        is_default_version=True,
+        version_description=f"BQML model {bqml_model_id}",
+    )
+    print(f"Registered Vertex model {model.resource_name}")
+    return model.resource_name

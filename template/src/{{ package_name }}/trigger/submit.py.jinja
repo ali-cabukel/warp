@@ -1,0 +1,147 @@
+"""Trigger Vertex AI PipelineJobs from payload.json + compiled YAML."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+
+def load_payload(path: str | Path) -> dict[str, Any]:
+    """Load the project payload JSON file."""
+    payload_path = Path(path)
+    with payload_path.open() as fh:
+        return json.load(fh)
+
+
+def _training_parameter_values(payload: dict[str, Any]) -> dict[str, Any]:
+    split = payload.get("split_ratio", {})
+    return {
+        "project_id": payload["project_id"],
+        "region": payload["region"],
+        "bq_dataset": payload["bq_dataset"],
+        "source_table": payload["source_table"],
+        "baseline_table": payload["baseline_table"],
+        "label_column": payload["label_column"],
+        "feature_columns": payload["feature_columns"],
+        "row_id_column": payload.get("row_id_column", "row_id"),
+        "model_display_name": payload["model_display_name"],
+        "model_type": payload["model_type"],
+        "bqml_model_name": payload["bqml_model_name"],
+        "train_ratio": float(split.get("train", 0.7)),
+        "eval_ratio": float(split.get("eval", 0.15)),
+        "drift_psi_threshold": float(payload.get("drift_psi_threshold", 0.2)),
+        "min_roc_auc": float(payload.get("min_roc_auc", 0.7)),
+        "artifact_gcs_uri": f"{payload['pipeline_root'].rstrip('/')}/artifacts/training",
+    }
+
+
+def _prediction_parameter_values(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_id": payload["project_id"],
+        "region": payload["region"],
+        "prediction_source_table": payload["prediction_source_table"],
+        "prediction_destination_table": payload["prediction_destination_table"],
+        "model_display_name": payload["model_display_name"],
+        "model_resource_name": payload.get("model_resource_name") or "",
+    }
+
+
+def submit_pipeline(
+    pipeline_kind: str,
+    template_path: str | Path,
+    payload_path: str | Path = "payload.json",
+    display_name: str | None = None,
+    enable_caching: bool = False,
+) -> str:
+    """Submit a compiled pipeline YAML as a Vertex ``PipelineJob``.
+
+    Returns the PipelineJob resource name.
+    """
+    from google.cloud import aiplatform
+
+    payload = load_payload(payload_path)
+    project_id = payload["project_id"]
+    region = payload["region"]
+    pipeline_root = payload["pipeline_root"]
+    service_account = payload.get("service_account") or None
+
+    if pipeline_kind == "training":
+        parameter_values = _training_parameter_values(payload)
+        default_name = "{{ project_slug }}-training"
+    elif pipeline_kind == "prediction":
+        parameter_values = _prediction_parameter_values(payload)
+        default_name = "{{ project_slug }}-prediction"
+    else:
+        raise ValueError(f"Unknown pipeline_kind={pipeline_kind!r}; use training|prediction")
+
+    aiplatform.init(
+        project=project_id,
+        location=region,
+        staging_bucket=pipeline_root,
+    )
+
+    job = aiplatform.PipelineJob(
+        display_name=display_name or default_name,
+        template_path=str(template_path),
+        pipeline_root=pipeline_root,
+        parameter_values=parameter_values,
+        enable_caching=enable_caching,
+        project=project_id,
+        location=region,
+    )
+    job.submit(service_account=service_account)
+    print(f"Submitted {pipeline_kind} pipeline: {job.resource_name}")
+    dashboard = getattr(job, "_dashboard_uri", None)
+    if callable(dashboard):
+        uri = dashboard()
+        if uri:
+            print(f"Console: {uri}")
+    return job.resource_name
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Submit a compiled KFP pipeline to Vertex AI",
+    )
+    parser.add_argument(
+        "pipeline_kind",
+        choices=["training", "prediction"],
+        help="Which pipeline parameter mapping to use",
+    )
+    parser.add_argument(
+        "--template",
+        required=True,
+        help="Path to compiled pipeline YAML",
+    )
+    parser.add_argument(
+        "--payload",
+        default="payload.json",
+        help="Path to payload.json (default: ./payload.json)",
+    )
+    parser.add_argument(
+        "--display-name",
+        default=None,
+        help="Optional Vertex PipelineJob display name",
+    )
+    parser.add_argument(
+        "--enable-caching",
+        action="store_true",
+        help="Enable Vertex pipeline step caching",
+    )
+    args = parser.parse_args(argv)
+
+    submit_pipeline(
+        pipeline_kind=args.pipeline_kind,
+        template_path=args.template,
+        payload_path=args.payload,
+        display_name=args.display_name,
+        enable_caching=args.enable_caching,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,86 @@
+# Cloud Build triggers for PR checks, main-branch Terraform apply, and release.
+
+resource "google_cloudbuild_trigger" "pr" {
+  count = var.enable_cloud_build_triggers && var.github_owner != "" && var.github_repo != "" ? 1 : 0
+
+  name        = "${var.name_prefix}-pr"
+  description = "PR: pre-commit, unit tests, KFP compile"
+  location    = var.region
+
+  github {
+    owner = var.github_owner
+    name  = var.github_repo
+    pull_request {
+      branch = "^main$"
+    }
+  }
+
+  filename       = "cloudbuild/pr.yaml"
+  included_files = ["**"]
+  service_account = "projects/${var.project_id}/serviceAccounts/${local.cloudbuild_sa_email}"
+
+  substitutions = {
+    _PYTHON_VERSION = "{{ python_version }}"
+  }
+
+  depends_on = [google_project_service.services]
+}
+
+resource "google_cloudbuild_trigger" "push" {
+  count = var.enable_cloud_build_triggers && var.github_owner != "" && var.github_repo != "" ? 1 : 0
+
+  name        = "${var.name_prefix}-push"
+  description = "Push to main: terraform apply"
+  location    = var.region
+
+  github {
+    owner = var.github_owner
+    name  = var.github_repo
+    push {
+      branch = "^main$"
+    }
+  }
+
+  filename        = "cloudbuild/push.yaml"
+  included_files  = ["terraform/**", "cloudbuild/push.yaml"]
+  service_account = "projects/${var.project_id}/serviceAccounts/${local.cloudbuild_sa_email}"
+
+  substitutions = {
+    _TF_DIR = "terraform"
+  }
+
+  depends_on = [google_project_service.services]
+}
+
+resource "google_cloudbuild_trigger" "release" {
+  count = var.enable_cloud_build_triggers && var.github_owner != "" && var.github_repo != "" ? 1 : 0
+
+  name        = "${var.name_prefix}-release"
+  description = "Tag release: docker build/push, publish KFP artifacts, optional e2e"
+  location    = var.region
+
+  github {
+    owner = var.github_owner
+    name  = var.github_repo
+    push {
+      tag = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    }
+  }
+
+  filename        = "cloudbuild/release.yaml"
+  service_account = "projects/${var.project_id}/serviceAccounts/${local.cloudbuild_sa_email}"
+
+  substitutions = {
+    _REGION                   = var.region
+    _ARTIFACT_REGISTRY_REPO   = var.artifact_registry_repo
+    _PIPELINE_ROOT_BUCKET     = var.pipeline_root_bucket
+    _PAYLOAD_OBJECT           = var.payload_gcs_object
+    _TRAINING_PIPELINE_OBJECT = var.training_pipeline_object
+    _PREDICTION_PIPELINE_OBJECT = var.prediction_pipeline_object
+    _CLOUD_RUN_SERVICE        = "${var.name_prefix}-trigger"
+    _RUN_E2E                  = var.run_e2e_on_release ? "true" : "false"
+    _PYTHON_VERSION           = "{{ python_version }}"
+  }
+
+  depends_on = [google_project_service.services]
+}

@@ -1,0 +1,106 @@
+variable "project_id" {
+  description = "GCP project ID"
+  type        = string
+}
+
+variable "region" {
+  description = "Default GCP region for Cloud Run / Artifact Registry"
+  type        = string
+}
+
+variable "vertex_region" {
+  description = "Vertex AI Pipelines region"
+  type        = string
+}
+
+variable "name_prefix" {
+  description = "Resource name prefix (kebab-case)"
+  type        = string
+}
+
+variable "pipeline_root_bucket" {
+  description = "GCS bucket for Vertex pipeline_root and compiled KFP YAML artifacts"
+  type        = string
+}
+
+variable "artifact_registry_repo" {
+  description = "Artifact Registry repository id for the Cloud Run trigger image"
+  type        = string
+  default     = "ml-pipelines"
+}
+
+variable "trigger_image" {
+  description = "Full image URI for the pipeline trigger Cloud Run service (set after first release build)"
+  type        = string
+  default     = ""
+}
+
+variable "training_cron" {
+  description = "Cloud Scheduler cron for training pipeline triggers (UTC)"
+  type        = string
+}
+
+variable "prediction_cron" {
+  description = "Cloud Scheduler cron for prediction pipeline triggers (UTC)"
+  type        = string
+}
+
+variable "scheduler_timezone" {
+  description = "IANA timezone for Cloud Scheduler jobs"
+  type        = string
+  default     = "UTC"
+}
+
+variable "payload_gcs_object" {
+  description = "GCS object path (within pipeline_root_bucket) for runtime payload.json"
+  type        = string
+  default     = "config/payload.json"
+}
+
+variable "training_pipeline_object" {
+  description = "GCS object path for compiled training pipeline YAML"
+  type        = string
+  default     = "kfp/training_pipeline.yaml"
+}
+
+variable "prediction_pipeline_object" {
+  description = "GCS object path for compiled prediction pipeline YAML"
+  type        = string
+  default     = "kfp/prediction_pipeline.yaml"
+}
+
+variable "enable_cloud_build_triggers" {
+  description = "Create Cloud Build triggers (requires connected GitHub repo)"
+  type        = bool
+  default     = true
+}
+
+variable "github_owner" {
+  description = "GitHub org/user that owns the generated project repository"
+  type        = string
+  default     = ""
+}
+
+variable "github_repo" {
+  description = "GitHub repository name for Cloud Build triggers"
+  type        = string
+  default     = ""
+}
+
+variable "cloudbuild_sa_email" {
+  description = "Optional existing Cloud Build service account email; empty creates one"
+  type        = string
+  default     = ""
+}
+
+variable "run_e2e_on_release" {
+  description = "Pass RUN_E2E=true to the release Cloud Build (smoke submit if credentials allow)"
+  type        = bool
+  default     = false
+}
+
+variable "labels" {
+  description = "Labels applied to supported resources"
+  type        = map(string)
+  default     = {}
+}

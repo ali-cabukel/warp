@@ -1,0 +1,27 @@
+"""KFP components for BQML classification pipelines."""
+
+from {{ package_name }}.components.drift import drift_detection
+from {{ package_name }}.components.evaluate import evaluate_bqml
+from {{ package_name }}.components.ingest_bq import ingest_bq
+from {{ package_name }}.components.postprocess import (
+    postprocess_metrics,
+    postprocess_predictions,
+)
+from {{ package_name }}.components.predict_bqml import predict_bqml
+from {{ package_name }}.components.register_model import register_model
+from {{ package_name }}.components.resolve_model import resolve_model
+from {{ package_name }}.components.split import split_table
+from {{ package_name }}.components.train_bqml import train_bqml
+
+__all__ = [
+    "ingest_bq",
+    "drift_detection",
+    "split_table",
+    "train_bqml",
+    "evaluate_bqml",
+    "postprocess_metrics",
+    "postprocess_predictions",
+    "register_model",
+    "resolve_model",
+    "predict_bqml",
+]

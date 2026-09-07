@@ -1,0 +1,21 @@
+"""Validate a BigQuery source table and return its fully-qualified id."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=["google-cloud-bigquery>=3.25"],
+)
+def ingest_bq(
+    project_id: str,
+    source_table: str,
+) -> str:
+    """Confirm ``source_table`` exists and return ``project.dataset.table``."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    table = client.get_table(source_table)
+    fq = f"{table.project}.{table.dataset_id}.{table.table_id}"
+    print(f"Ingested table {fq} with {table.num_rows} rows")
+    return fq

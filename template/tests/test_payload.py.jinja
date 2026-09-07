@@ -1,0 +1,55 @@
+"""Smoke tests for payload.json schema."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PAYLOAD_PATH = ROOT / "payload.json"
+
+REQUIRED_KEYS = {
+    "project_id",
+    "region",
+    "pipeline_root",
+    "bq_dataset",
+    "source_table",
+    "baseline_table",
+    "label_column",
+    "feature_columns",
+    "model_display_name",
+    "model_type",
+    "bqml_model_name",
+    "split_ratio",
+    "drift_psi_threshold",
+    "min_roc_auc",
+    "prediction_source_table",
+    "prediction_destination_table",
+}
+
+
+def test_payload_exists() -> None:
+    assert PAYLOAD_PATH.is_file(), f"missing {PAYLOAD_PATH}"
+
+
+def test_payload_required_keys() -> None:
+    payload = json.loads(PAYLOAD_PATH.read_text())
+    missing = REQUIRED_KEYS - payload.keys()
+    assert not missing, f"payload.json missing keys: {sorted(missing)}"
+
+
+def test_payload_feature_columns_nonempty() -> None:
+    payload = json.loads(PAYLOAD_PATH.read_text())
+    assert isinstance(payload["feature_columns"], list)
+    assert len(payload["feature_columns"]) >= 1
+
+
+def test_payload_model_type_supported() -> None:
+    payload = json.loads(PAYLOAD_PATH.read_text())
+    assert payload["model_type"] in {"LOGISTIC_REG", "BOOSTED_TREE_CLASSIFIER"}
+
+
+def test_payload_split_ratios_sum_to_one() -> None:
+    split = json.loads(PAYLOAD_PATH.read_text())["split_ratio"]
+    total = float(split["train"]) + float(split["eval"]) + float(split["test"])
+    assert abs(total - 1.0) < 1e-6

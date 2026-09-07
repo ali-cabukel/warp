@@ -1,0 +1,72 @@
+"""Resolve a BQML model id from Vertex AI Model Registry metadata."""
+
+from kfp.dsl import component
+
+
+@component(
+    base_image="python:{{ python_version }}-slim",
+    packages_to_install=[
+        "google-cloud-aiplatform>=1.60",
+        "google-cloud-storage>=2.17",
+    ],
+)
+def resolve_model(
+    project_id: str,
+    region: str,
+    model_display_name: str,
+    model_resource_name: str = "",
+) -> str:
+    """Look up a Vertex Model and return the embedded ``bqml_model_id``.
+
+    Prefer ``model_resource_name`` when set; otherwise list by ``model_display_name``.
+    """
+    import json
+    from urllib.parse import urlparse
+
+    from google.cloud import aiplatform, storage
+
+    aiplatform.init(project=project_id, location=region)
+
+    if model_resource_name:
+        model = aiplatform.Model(model_resource_name)
+    else:
+        matches = aiplatform.Model.list(
+            filter=f'display_name="{model_display_name}"',
+            order_by="create_time desc",
+        )
+        if not matches:
+            raise RuntimeError(
+                f"No Vertex Model found with display_name={model_display_name!r}"
+            )
+        model = matches[0]
+
+    artifact_uri = model.uri
+    if not artifact_uri:
+        raise RuntimeError(f"Model {model.resource_name} has no artifact URI")
+
+    parsed = urlparse(artifact_uri)
+    bucket_name = parsed.netloc
+    prefix = parsed.path.lstrip("/").rstrip("/")
+    object_name = f"{prefix}/model_metadata.json" if prefix else "model_metadata.json"
+
+    raw = (
+        storage.Client(project=project_id)
+        .bucket(bucket_name)
+        .blob(object_name)
+        .download_as_text()
+    )
+    metadata = json.loads(raw)
+    bqml_model_id = metadata.get("bqml_model_id")
+    if not bqml_model_id:
+        raise RuntimeError(f"bqml_model_id missing in {object_name}: {metadata}")
+
+    print(
+        json.dumps(
+            {
+                "vertex_model": model.resource_name,
+                "bqml_model_id": bqml_model_id,
+            },
+            indent=2,
+        )
+    )
+    return bqml_model_id
